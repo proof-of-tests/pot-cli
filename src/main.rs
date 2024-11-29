@@ -83,15 +83,22 @@ impl WasmTest {
         })
     }
 
-    fn run(&mut self, seed: u64) -> anyhow::Result<Result<u64, String>> {
+    fn run(&mut self, seed: u64) -> anyhow::Result<Result<u64, (wasmtime::Trap, String, String)>> {
         *self.stdout.write().unwrap() = Cursor::new(Vec::new());
         *self.stderr.write().unwrap() = Cursor::new(Vec::new());
-        let result = self.test.call(&mut self.store, seed)?;
-        if result == u64::MAX {
-            let stdout = String::from_utf8(self.stdout.read().unwrap().get_ref().clone())?;
-            let stderr = String::from_utf8(self.stderr.read().unwrap().get_ref().clone())?;
-            return Ok(Err(format!("stdout:\n{}\nstderr:\n{}", stdout, stderr)));
-        }
+        let result = match self.test.call(&mut self.store, seed) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(trap) = e.root_cause().downcast_ref::<wasmtime::Trap>() {
+                    let stdout = String::from_utf8(self.stdout.read().unwrap().get_ref().clone())
+                        .unwrap_or_else(|_| "".to_string());
+                    let stderr = String::from_utf8(self.stderr.read().unwrap().get_ref().clone())
+                        .unwrap_or_else(|_| "".to_string());
+                    return Ok(Err((trap.clone(), stdout, stderr)));
+                }
+                return Err(e);
+            }
+        };
         self.hll.add(seed, result);
         Ok(Ok(result))
     }
@@ -118,8 +125,8 @@ fn main() -> anyhow::Result<()> {
             let mut rng = initial_seed.map_or_else(StdRng::from_entropy, StdRng::seed_from_u64);
             for _ in 0..iterations {
                 let seed = rng.gen();
-                if let Err(e) = wasm_test.run(seed) {
-                    println!("Error: {:?}", e);
+                if let Err((trap, stdout, stderr)) = wasm_test.run(seed)? {
+                    println!("trap: {trap}\nstdout:\n{}\nstderr:\n{}", stdout, stderr);
                 }
             }
             wasm_test.save()?;
