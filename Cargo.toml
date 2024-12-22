@@ -12,3 +12,7 @@ serde_json = "1.0.132"
 wasi-common = "26.0.0"
 wasm-bindgen-futures = "0.4.45"
 wasmtime = "26.0.0"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
