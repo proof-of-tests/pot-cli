@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use hyperloglog::HyperLogLog;
 use rand::rngs::StdRng;
@@ -30,6 +31,10 @@ enum Commands {
     },
     Verify {
         #[arg(help = "The target to verify")]
+        target: String,
+    },
+    Info {
+        #[arg(help = "Path to the WASM file to inspect")]
         target: String,
     },
 }
@@ -109,6 +114,63 @@ impl WasmTest {
     }
 }
 
+fn print_module_info(path: &str) -> anyhow::Result<()> {
+    let engine = Engine::default();
+    let module = Module::from_file(&engine, path)?;
+
+    println!("Module: {}", path);
+
+    // Extract and print REPO variable
+    let mut linker = Linker::new(&engine);
+    wasi_common::sync::add_to_linker(&mut linker, |s| s)?;
+
+    let wasi = WasiCtxBuilder::new().build();
+    let mut store = Store::new(&engine, wasi);
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let repo_global = instance
+        .get_global(&mut store, "REPO")
+        .expect("Invalid pot module: REPO global must be exported");
+    let offset = repo_global.get(&mut store).i32().unwrap();
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .context("Invalid pot module: memory export not found")?;
+
+    let repo_string =
+        core::ffi::CStr::from_bytes_until_nul(&memory.data(&store)[offset as usize..])
+            .unwrap_or_default()
+            .to_str()
+            .context("Invalid pot module: REPO variable is not valid UTF-8")?;
+
+    println!("Repository: {}", repo_string);
+
+    println!("Exported functions:");
+    for export in module.exports() {
+        if let Some(func_type) = export.ty().func() {
+            let params = func_type
+                .params()
+                .map(|v| format!("{:?}", v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let results = func_type
+                .results()
+                .map(|v| format!("{:?}", v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  - {}({}) -> {}", export.name(), params, results);
+            if export.name() == "test" {
+                if params != "i64" || results != "i64" {
+                    anyhow::bail!(
+                        "Invalid pot module: test functions must have signature test(i64) -> i64"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -149,5 +211,6 @@ fn main() -> anyhow::Result<()> {
             println!("Verification passed ✅");
             Ok(())
         }
+        Commands::Info { target } => print_module_info(&target),
     }
 }
